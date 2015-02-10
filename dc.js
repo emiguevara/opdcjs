@@ -4252,9 +4252,9 @@ dc.barChart = function (parent, chartGroup) {
             enter.append('title').text(dc.pluck('data', _chart.title(d.name)));
         }
 
-        //if (_chart.isOrdinal()) { // Emiliano: disable check to activate clickable bars
-            bars.on('click', onClick);
-        //}
+        if (_chart.isOrdinal()) {
+            bars.on('click', _chart.onClick);
+        }
 
         dc.transition(bars, _chart.transitionDuration())
             .attr('x', function (d) {
