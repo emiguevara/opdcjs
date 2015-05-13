@@ -1,7 +1,8 @@
 /*!
  *  dc 2.1.0-dev
  *  http://dc-js.github.io/dc.js/
- *  Copyright 2012 Nick Zhu and other contributors
+ *  Copyright 2012-2015 Nick Zhu & the dc.js Developers
+ *  https://github.com/dc-js/dc.js/blob/master/AUTHORS
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -15,7 +16,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 (function() { function _dc(d3, crossfilter) {
 'use strict';
 
@@ -663,6 +663,7 @@ dc.baseMixin = function (_chart) {
     var _anchor;
     var _root;
     var _svg;
+    var _isChild;
 
     var _minWidth = 200;
     var _defaultWidth = function (element) {
@@ -949,11 +950,13 @@ dc.baseMixin = function (_chart) {
         if (dc.instanceOfChart(a)) {
             _anchor = a.anchor();
             _root = a.root();
+            _isChild = true;
         } else {
             _anchor = a;
             _root = d3.select(_anchor);
             _root.classed(dc.constants.CHART_CLASS, true);
             dc.registerChart(_chart, chartGroup);
+            _isChild = false;
         }
         _chartGroup = chartGroup;
         return _chart;
@@ -1658,7 +1661,13 @@ dc.baseMixin = function (_chart) {
         if (!arguments.length) {
             return _chartGroup;
         }
+        if (!_isChild) {
+            dc.deregisterChart(_chart, _chartGroup);
+        }
         _chartGroup = _;
+        if (!_isChild) {
+            dc.registerChart(_chart, _chartGroup);
+        }
         return _chart;
     };
 
@@ -3259,9 +3268,8 @@ dc.stackMixin = function (_chart) {
     };
 
     function flattenStack() {
-        return _chart.data().reduce(function (all, layer) {
-            return all.concat(layer.values);
-        }, []);
+        var valueses = _chart.data().map(function (layer) { return layer.values; });
+        return Array.prototype.concat.apply([], valueses);
     }
 
     _chart.xAxisMin = function () {
@@ -3336,7 +3344,9 @@ dc.stackMixin = function (_chart) {
     });
 
     _chart._ordinalXDomain = function () {
-        return flattenStack().map(dc.pluck('x'));
+        var flat = flattenStack().map(dc.pluck('data'));
+        var ordered = _chart._computeOrderedGroups(flat);
+        return ordered.map(_chart.keyAccessor());
     };
 
     _chart.colorAccessor(function (d) {
@@ -3846,7 +3856,7 @@ dc.pieChart = function (parent, chartGroup) {
     function createTitles(slicesEnter) {
         if (_chart.renderTitle()) {
             slicesEnter.append('title').text(function (d) {
-                return _chart.title()(d);
+                return _chart.title()(d.data);
             });
         }
     }
@@ -4520,6 +4530,7 @@ dc.lineChart = function (parent, chartGroup) {
     var _tension = 0.7;
     var _defined;
     var _dashStyle;
+    var _xyTipsOn = true;
 
     _chart.transitionDuration(500);
     _chart._rangeBandPadding(1);
@@ -4565,7 +4576,8 @@ dc.lineChart = function (parent, chartGroup) {
     };
 
     /**
-     #### .tension([value]) Gets or sets the tension to use for lines drawn, in the range 0 to 1.
+     #### .tension([value])
+     Gets or sets the tension to use for lines drawn, in the range 0 to 1.
      This parameter further customizes the interpolation behavior.  It is passed to
      [d3.svg.line.tension](https://github.com/mbostock/d3/wiki/SVG-Shapes#line_tension) and
      [d3.svg.area.tension](https://github.com/mbostock/d3/wiki/SVG-Shapes#area_tension).  Default:
@@ -4701,7 +4713,7 @@ dc.lineChart = function (parent, chartGroup) {
     }
 
     function drawDots(chartBody, layers) {
-        if (!_chart.brushOn()) {
+        if (!_chart.brushOn() && _chart.xyTipsOn()) {
             var tooltipListClass = TOOLTIP_G_CLASS + '-list';
             var tooltips = chartBody.select('g.' + tooltipListClass);
 
@@ -4805,6 +4817,20 @@ dc.lineChart = function (parent, chartGroup) {
             dot.append('title').text(dc.pluck('data', _chart.title(d.name)));
         }
     }
+
+    /**
+     #### .xyTipsOn([boolean])
+     Turn on/off the mouseover behavior of an individual data point which renders a circle and x/y axis
+     dashed lines back to each respective axis.  This is ignored if the chart brush is on (`brushOn`)
+     Default: true
+     */
+    _chart.xyTipsOn = function (_) {
+        if (!arguments.length) {
+            return _xyTipsOn;
+        }
+        _xyTipsOn = _;
+        return _chart;
+    };
 
     /**
     #### .dotRadius([dotRadius])
@@ -5766,6 +5792,7 @@ dc.compositeChart = function (parent, chartGroup) {
             child.transitionDuration(_chart.transitionDuration());
             child.brushOn(_chart.brushOn());
             child.renderTitle(_chart.renderTitle());
+            child.elasticX(_chart.elasticX());
         }
 
         return g;
@@ -7832,6 +7859,11 @@ dc.heatMap = function (parent, chartGroup) {
 
     var _cols;
     var _rows;
+    var _colOrdering = d3.ascending;
+    var _rowOrdering = d3.ascending;
+    var _colScale = d3.scale.ordinal();
+    var _rowScale = d3.scale.ordinal();
+
     var _xBorderRadius = DEFAULT_BORDER_RADIUS;
     var _yBorderRadius = DEFAULT_BORDER_RADIUS;
 
@@ -7919,47 +7951,55 @@ dc.heatMap = function (parent, chartGroup) {
         return _chart._filter(dc.filters.TwoDimensionalFilter(filter));
     });
 
-    function uniq(d, i, a) {
-        return !i || a[i - 1] !== d;
-    }
-
     /**
      #### .rows([values])
      Gets or sets the values used to create the rows of the heatmap, as an array. By default, all
-     the values will be fetched from the data using the value accessor, and they will be sorted in
-     ascending order.
+     the values will be fetched from the data using the value accessor.
      **/
 
     _chart.rows = function (_) {
-        if (arguments.length) {
-            _rows = _;
-            return _chart;
-        }
-        if (_rows) {
+        if (!arguments.length) {
             return _rows;
         }
-        var rowValues = _chart.data().map(_chart.valueAccessor());
-        rowValues.sort(d3.ascending);
-        return d3.scale.ordinal().domain(rowValues.filter(uniq));
+        _rows = _;
+        return _chart;
+    };
+
+    /**
+     #### .rowOrdering([orderFunction])
+     Get or set an accessor to order the rows.  Default is d3.ascending.
+     */
+    _chart.rowOrdering = function (_) {
+        if (!arguments.length) {
+            return _rowOrdering;
+        }
+        _rowOrdering = _;
+        return _chart;
     };
 
     /**
      #### .cols([keys])
      Gets or sets the keys used to create the columns of the heatmap, as an array. By default, all
-     the values will be fetched from the data using the key accessor, and they will be sorted in
-     ascending order.
+     the values will be fetched from the data using the key accessor.
      **/
     _chart.cols = function (_) {
-        if (arguments.length) {
-            _cols = _;
-            return _chart;
-        }
-        if (_cols) {
+        if (!arguments.length) {
             return _cols;
         }
-        var colValues = _chart.data().map(_chart.keyAccessor());
-        colValues.sort(d3.ascending);
-        return d3.scale.ordinal().domain(colValues.filter(uniq));
+        _cols = _;
+        return _chart;
+    };
+
+    /**
+     #### .colOrdering([orderFunction])
+     Get or set an accessor to order the cols.  Default is ascending.
+     */
+    _chart.colOrdering = function (_) {
+        if (!arguments.length) {
+            return _colOrdering;
+        }
+        _colOrdering = _;
+        return _chart;
     };
 
     _chart._doRender = function () {
@@ -7974,9 +8014,19 @@ dc.heatMap = function (parent, chartGroup) {
     };
 
     _chart._doRedraw = function () {
-        var rows = _chart.rows(),
-            cols = _chart.cols(),
-            rowCount = rows.domain().length,
+        var data = _chart.data(),
+            rows = _chart.rows() || data.map(_chart.valueAccessor()),
+            cols = _chart.cols() || data.map(_chart.keyAccessor());
+        if (_rowOrdering) {
+            rows = rows.sort(_rowOrdering);
+        }
+        if (_colOrdering) {
+            cols = cols.sort(_colOrdering);
+        }
+        rows = _rowScale.domain(rows);
+        cols = _colScale.domain(cols);
+
+        var rowCount = rows.domain().length,
             colCount = cols.domain().length,
             boxWidth = Math.floor(_chart.effectiveWidth() / colCount),
             boxHeight = Math.floor(_chart.effectiveHeight() / rowCount);
@@ -7996,8 +8046,8 @@ dc.heatMap = function (parent, chartGroup) {
             .on('click', _chart.boxOnClick());
 
         if (_chart.renderTitle()) {
-            gEnter.append('title')
-                .text(_chart.title());
+            gEnter.append('title');
+            boxes.selectAll('title').text(_chart.title());
         }
 
         dc.transition(boxes.selectAll('rect'), _chart.transitionDuration())
@@ -8714,3 +8764,5 @@ return dc;}
     }
 }
 )();
+
+//# sourceMappingURL=dc.js.map
