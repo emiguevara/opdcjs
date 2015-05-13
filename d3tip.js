@@ -155,6 +155,17 @@
       return tip
     }
 
+    // Public: destroys the tooltip and removes it from the DOM
+    //
+    // Returns a tip
+    tip.destroy = function() {
+      if(node) {
+        getNodeEl().remove();
+        node = null;
+      }
+      return tip;
+    }
+
     function d3_tip_direction() { return 'n' }
     function d3_tip_offset() { return [0, 0] }
     function d3_tip_html() { return ' ' }
@@ -256,6 +267,15 @@
         return el
 
       return el.ownerSVGElement
+    }
+
+    function getNodeEl() {
+      if(node === null) {
+        node = initNode();
+        // re-add node to DOM
+        document.body.appendChild(node);
+      };
+      return d3.select(node);
     }
 
     // Private - gets the screen coordinates of a shape
